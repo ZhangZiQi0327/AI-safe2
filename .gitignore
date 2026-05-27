@@ -1,0 +1,30 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Downloaded public CIFAR-10 cache
+data_cache/
+
+# Temporary experiment outputs
+models_smoke/
+
+# Temporary files converted from PDFs
+assignment_spec.txt
+team_plan.txt
