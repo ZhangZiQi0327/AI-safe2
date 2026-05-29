@@ -28,3 +28,8 @@ models_smoke/
 # Temporary files converted from PDFs
 assignment_spec.txt
 team_plan.txt
+
+# Experiment outputs (large, regenerate on demand)
+output_*/
+ssim_analysis_*/
+grid_search_results.csv

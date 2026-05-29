@@ -1,138 +1,75 @@
-# CIFAR-10 无限制对抗攻击竞赛 - A 同学部分
+# CIFAR-10 无限制对抗攻击竞赛
 
-本项目对应第二次大作业中 A 同学负责的内容：基础工程、数据加载、代理模型训练、FGSM/PGD 基础攻击和 baseline 记录。
+三人协作项目：在尽量不改变图片肉眼观感的情况下，骗过多个未知 AI 图像分类模型。
 
-## 已实现功能
-
-- 统一数据加载：读取 `dataset/images` 与 `dataset/label.txt`，不修改 `label.txt`。
-- 数据增强：随机裁剪、水平翻转、颜色抖动、CIFAR-10 标准归一化。
-- 代理模型：ResNet-18、ResNet-34、VGG-16、DenseNet-121。
-- 基础攻击：FGSM、PGD。
-- baseline 评估：记录 clean accuracy、ASR、SSIM、本地 proxy score。
-
-## 目录结构
+## 项目结构
 
 ```text
 .
-|-- attacks/
-|   |-- fgsm.py
-|   |-- pgd.py
-|   `-- common.py
-|-- data/
+|-- attacks/              # 攻击算法
+|   |-- fgsm.py           # FGSM 单步攻击
+|   |-- pgd.py            # PGD 迭代攻击
+|   |-- mi_fgsm.py        # MI-FGSM 动量迭代攻击
+|   |-- ensemble.py       # 集成攻击
+|   `-- common.py         # 共享工具（归一化、epsilon转换等）
+|-- data/                 # 数据加载
 |   `-- loader.py
-|-- models/
+|-- models/               # 代理模型架构
 |   `-- architectures.py
-|-- train_proxy.py
-|-- eval_attack_baseline.py
-|-- run_all_a.cmd
-|-- README_A.md
-|-- requirements.txt
-`-- dataset/
-    |-- images/
-    `-- label.txt
+|-- pipeline/             # 批量生成管线（C同学）
+|   |-- generate.py       # 批量生成对抗样本
+|   |-- grid_search.py    # 参数网格搜索
+|   `-- ssim_analysis.py  # SSIM质量分析
+|-- models_public/        # 训练好的模型权重
+|-- dataset/              # 500张竞赛图片
+|-- train_proxy.py        # 模型训练脚本
+|-- eval_attack_baseline.py   # 基线评估
+|-- eval_transfer_attacks.py  # 迁移攻击评估
+`-- search_transfer_params.py # 参数搜索
 ```
 
-## 环境
+## 快速开始
 
-推荐使用 Python 3.10 或 3.11。当前代码已在 `ai-learn` 环境中跑通。
-
-CPU 版依赖安装：
+### 环境
 
 ```bat
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install numpy pillow tqdm
+pip install torch torchvision numpy pillow tqdm
 ```
 
-GPU 版请根据本机 CUDA 版本安装对应 PyTorch。
-
-检查 PyTorch 是否可用：
+### 生成对抗样本（推荐）
 
 ```bat
-python -c "import torch, torchvision; print(torch.__version__); print(torchvision.__version__); print(torch.cuda.is_available())"
+python pipeline/generate.py ^
+  --attack ensemble ^
+  --checkpoints models_public/resnet18_best.pt models_public/resnet34_best.pt models_public/vgg16_best.pt models_public/densenet121_best.pt ^
+  --epsilon 0.0510 --alpha 0.0098 --steps 20 --decay 1.0 ^
+  --diversity-prob 0.3 --resize-rate 0.85 ^
+  --output output_eps13
 ```
 
-## 训练
+输出 `output_eps13/adversarial_images.zip`，可直接提交。
 
-第一次使用公开 CIFAR-10 时需要下载：
+### 提交zip格式
 
-```bat
-python train_proxy.py --model resnet18 --epochs 80 --batch-size 128 --include-public-cifar10 --download-cifar10 --output-dir models_public
+```
+adversarial_images.zip
+├── images/
+│   ├── 0.png ~ 499.png
+└── label.txt
 ```
 
-之后训练其他模型不需要再加 `--download-cifar10`：
+## 三人分工
 
-```bat
-python train_proxy.py --model resnet34 --epochs 80 --batch-size 128 --include-public-cifar10 --output-dir models_public
-python train_proxy.py --model vgg16 --epochs 100 --batch-size 128 --include-public-cifar10 --output-dir models_public
-python train_proxy.py --model densenet121 --epochs 100 --batch-size 64 --include-public-cifar10 --output-dir models_public
-```
+| 角色 | 负责内容 | 状态 |
+|------|---------|------|
+| A（张子琪） | 代理模型训练 + 基础攻击 | 已完成 |
+| B | 强迁移攻击研究（MI-FGSM、Ensemble） | 已完成 |
+| C（杨明和） | 批量生成管线 + 调参 + 提交 | 已完成 |
 
-也可以直接运行自动脚本：
+## 当前最优配置
 
-```bat
-run_all_a.cmd
-```
+- 攻击方法：Ensemble（4模型集成）
+- 参数：eps=0.0510, alpha=0.0098, steps=20, decay=1.0, diversity_prob=0.3, resize_rate=0.85
+- 平台得分：13.61（2026-05-29）
 
-该脚本会顺序训练四个模型并跑 FGSM/PGD baseline，中途失败会停止。
-
-## 攻击评估
-
-FGSM：
-
-```bat
-python eval_attack_baseline.py --checkpoint models_public\resnet18_best.pt --attack fgsm --epsilon 0.031372549 --output baseline_results_public.csv
-```
-
-PGD：
-
-```bat
-python eval_attack_baseline.py --checkpoint models_public\resnet18_best.pt --attack pgd --epsilon 0.031372549 --alpha 0.007843137 --steps 10 --output baseline_results_public.csv
-```
-
-其中：
-
-- `epsilon=0.031372549` 等于 `8/255`
-- `alpha=0.007843137` 等于 `2/255`
-- `steps=10` 是 PGD 迭代步数
-
-## 当前结果
-
-四个代理模型均已训练完成，验证集 clean accuracy 如下：
-
-| Model | Epoch | Val Acc |
-| --- | ---: | ---: |
-| ResNet-18 | 80 | 0.93 |
-| ResNet-34 | 80 | 0.94 |
-| VGG-16 | 100 | 0.94 |
-| DenseNet-121 | 100 | 0.96 |
-
-本地白盒 PGD baseline：
-
-| Model | Clean Acc | ASR | Mean SSIM |
-| --- | ---: | ---: | ---: |
-| ResNet-18 | 0.962 | 1.000 | 0.9917 |
-| ResNet-34 | 0.990 | 1.000 | 0.9924 |
-| VGG-16 | 0.958 | 1.000 | 0.9918 |
-| DenseNet-121 | 0.974 | 1.000 | 0.9922 |
-
-这些结果说明本地代理模型质量较高，PGD 白盒攻击已充分跑通。但平台是黑盒隐藏模型，最终迁移效果仍需 B/C 同学用 MI-FGSM、集成攻击、输入变换和提交反馈继续验证。
-
-## A 同学交付物
-
-建议交付给组员：
-
-```text
-models_public/resnet18_best.pt
-models_public/resnet34_best.pt
-models_public/vgg16_best.pt
-models_public/densenet121_best.pt
-baseline_results_public.csv
-attacks/fgsm.py
-attacks/pgd.py
-data/loader.py
-models/architectures.py
-train_proxy.py
-eval_attack_baseline.py
-README.md
-README_A.md
-```
+详细说明见 [README_A.md](README_A.md)（A同学）和 [README_B.md](README_B.md)（B同学）。
