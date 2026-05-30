@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .common import clamp_normalized, input_diversity, project_linf, raw_eps_to_normalized
+from .common import clamp_normalized, input_diversity, project_linf, raw_eps_to_normalized, smooth_gradients
 
 
 def mi_fgsm_attack(
@@ -17,6 +17,8 @@ def mi_fgsm_attack(
     random_start: bool = False,
     diversity_prob: float = 0.0,
     resize_rate: float = 0.9,
+    ti_kernel_size: int = 0,
+    ti_sigma: float = 1.0,
 ) -> torch.Tensor:
     """Momentum iterative FGSM on normalized tensors."""
 
@@ -41,6 +43,7 @@ def mi_fgsm_attack(
         loss.backward()
 
         grad = adversarial.grad.detach()
+        grad = smooth_gradients(grad, kernel_size=ti_kernel_size, sigma=ti_sigma)
         grad = grad / grad.abs().mean(dim=(1, 2, 3), keepdim=True).clamp_min(1e-12)
         momentum = decay * momentum + grad
 

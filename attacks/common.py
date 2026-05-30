@@ -74,3 +74,27 @@ def input_diversity(
     pad_right = width - resize_width - pad_left
     padded = F.pad(resized, (pad_left, pad_right, pad_top, pad_bottom), mode="constant", value=0.0)
     return normalize(padded)
+
+
+def smooth_gradients(
+    gradients: torch.Tensor,
+    kernel_size: int = 0,
+    sigma: float = 1.0,
+) -> torch.Tensor:
+    """Apply translation-invariant Gaussian smoothing to image gradients."""
+
+    if kernel_size <= 1:
+        return gradients
+
+    if kernel_size % 2 == 0:
+        raise ValueError("TI kernel_size must be odd.")
+
+    coords = torch.arange(kernel_size, device=gradients.device, dtype=gradients.dtype)
+    coords = coords - (kernel_size - 1) / 2
+    sigma = max(float(sigma), 1e-6)
+    kernel_1d = torch.exp(-(coords.square()) / (2 * sigma * sigma))
+    kernel_1d = kernel_1d / kernel_1d.sum()
+    kernel_2d = torch.outer(kernel_1d, kernel_1d)
+    kernel_2d = kernel_2d / kernel_2d.sum()
+    kernel = kernel_2d.view(1, 1, kernel_size, kernel_size).repeat(gradients.size(1), 1, 1, 1)
+    return F.conv2d(gradients, kernel, padding=kernel_size // 2, groups=gradients.size(1))

@@ -12,6 +12,10 @@
 - `b_search_mi_summary.csv`: 单模型 MI-FGSM 源模型消融汇总。
 - `b_final_results.csv`: 全量 500 张图上的最终验证结果。
 - `b_experiment_records.csv`: 早期方法对比记录。
+- `b_quick_opt_results.csv`: 攻击策略优化快速验证。
+- `b_quick_opt_results_extra.csv`: 权重与随机起始补充验证。
+- `b_quick_opt_results_vgg16.csv`: 在 `vgg16` 目标上的交叉验证。
+- `b_quick_opt_confirm_vgg16.csv`: `vgg16` 目标 64 张确认实验。
 
 ## 我做了什么
 
@@ -102,6 +106,68 @@ resize_rate = 0.85
 - `MI-FGSM` 明显优于基础攻击。
 - `Ensemble Attack` 整体上优于单模型攻击，是当前最值得交给 C 同学用于最终出图的方案。
 - 少量输入变换在当前任务上是有效的，但不宜把 `diversity_prob` 调得太高。
+
+## 额外优化结论
+
+队长提出了 3 个继续优化方向，我做了少量高效验证，结论如下：
+
+- `TI-FGSM / TI-Ensemble`：
+  在当前 CIFAR-10 代理模型组合上，`TI` 没带来收益，反而明显降低迁移成功率。
+  结论：当前版本不建议默认开启 `TI`。
+- `集成权重调优`：
+  温和权重几乎和等权一样；更激进地提高 `densenet121` 权重后，在部分 held-out 目标上有轻微正收益。
+  结论：可以保留“强模型更高权重”作为可选项，但不是最核心收益来源。
+- `多次随机起始`：
+  对已经很容易打穿的 held-out 目标，收益很小；但对更难的目标，配合激进权重后能带来稳定提升。
+  结论：如果算力允许，推荐作为“增强模式”开启 `restarts=2`。
+
+### 快速验证结果
+
+- `resnet34` 目标，32 张样本：
+  - baseline ensemble：`transfer_score_target_clean = 98.70`
+  - `TI only`：下降到 `92.46`
+  - `weighted only`：基本持平，略升到 `98.70+`
+  - `weighted_extreme + restarts=2`：略升到 `98.71`
+- `vgg16` 目标，32 张样本：
+  - baseline ensemble：`95.55`
+  - `weighted_extreme + restarts=2`：升到 `98.71`
+- `vgg16` 目标，64 张确认：
+  - baseline ensemble：`95.15`
+  - `weighted_extreme + restarts=2`：升到 `96.78`
+
+### 这轮优化后的建议
+
+如果追求稳妥和算力开销平衡，继续使用当前默认推荐：
+
+```text
+attack = ensemble
+epsilon = 10/255
+alpha = 2/255
+steps = 12
+momentum = 1.0
+diversity_prob = 0.3
+resize_rate = 0.85
+```
+
+如果准备冲更高分，并且愿意多花一倍左右攻击时间，可以尝试增强版：
+
+```text
+attack = ensemble
+epsilon = 10/255
+alpha = 2/255
+steps = 12
+momentum = 1.0
+diversity_prob = 0.3
+resize_rate = 0.85
+source_weights = stronger densenet121
+restarts = 2
+```
+
+不推荐默认开启：
+
+```text
+ti_kernel_size > 0
+```
 
 ## 推荐给 C 同学怎么接
 

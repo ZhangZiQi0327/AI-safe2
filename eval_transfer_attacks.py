@@ -6,6 +6,7 @@ import random
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
@@ -28,6 +29,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--random-start", action="store_true")
     parser.add_argument("--diversity-prob", type=float, default=0.0)
     parser.add_argument("--resize-rate", type=float, default=0.9)
+    parser.add_argument("--ti-kernel-size", type=int, default=0)
+    parser.add_argument("--ti-sigma", type=float, default=1.0)
+    parser.add_argument("--restarts", type=int, default=1)
+    parser.add_argument("--source-weights", nargs="+", type=float)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--max-samples", type=int, default=0)
@@ -77,10 +82,31 @@ def predict(model: torch.nn.Module, images: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
-def predict_source(models: list[torch.nn.Module], images: torch.Tensor, use_ensemble: bool) -> torch.Tensor:
+def predict_source(
+    models: list[torch.nn.Module],
+    images: torch.Tensor,
+    use_ensemble: bool,
+    source_weights: list[float] | None,
+) -> torch.Tensor:
     if use_ensemble:
-        return ensemble_logits(models, images).argmax(dim=1)
+        return ensemble_logits(models, images, model_weights=source_weights).argmax(dim=1)
     return models[0](images).argmax(dim=1)
+
+
+@torch.no_grad()
+def source_attack_scores(
+    models: list[torch.nn.Module],
+    images: torch.Tensor,
+    labels: torch.Tensor,
+    attack_name: str,
+    source_weights: list[float] | None,
+) -> torch.Tensor:
+    if attack_name == "ensemble":
+        logits = ensemble_logits(models, images, model_weights=source_weights)
+        return F.cross_entropy(logits, labels, reduction="none")
+
+    logits = models[0](images)
+    return F.cross_entropy(logits, labels, reduction="none")
 
 
 def generate_attack(
@@ -90,6 +116,7 @@ def generate_attack(
     labels: torch.Tensor,
     args: argparse.Namespace,
 ) -> torch.Tensor:
+    random_start = args.random_start or args.restarts > 1
     if attack_name == "fgsm":
         return fgsm_attack(source_models[0], images, labels, epsilon=args.epsilon)
     if attack_name == "pgd":
@@ -100,7 +127,7 @@ def generate_attack(
             epsilon=args.epsilon,
             alpha=args.alpha,
             steps=args.steps,
-            random_start=args.random_start,
+            random_start=random_start,
         )
     if attack_name == "mi_fgsm":
         return mi_fgsm_attack(
@@ -111,9 +138,11 @@ def generate_attack(
             alpha=args.alpha,
             steps=args.steps,
             decay=args.momentum,
-            random_start=args.random_start,
+            random_start=random_start,
             diversity_prob=args.diversity_prob,
             resize_rate=args.resize_rate,
+            ti_kernel_size=args.ti_kernel_size,
+            ti_sigma=args.ti_sigma,
         )
     return ensemble_attack(
         source_models,
@@ -123,10 +152,48 @@ def generate_attack(
         alpha=args.alpha,
         steps=args.steps,
         decay=args.momentum,
-        random_start=args.random_start,
+        random_start=random_start,
         diversity_prob=args.diversity_prob,
         resize_rate=args.resize_rate,
+        ti_kernel_size=args.ti_kernel_size,
+        ti_sigma=args.ti_sigma,
+        model_weights=args.source_weights,
     )
+
+
+def generate_attack_with_restarts(
+    attack_name: str,
+    source_models: list[torch.nn.Module],
+    images: torch.Tensor,
+    labels: torch.Tensor,
+    args: argparse.Namespace,
+) -> torch.Tensor:
+    if args.restarts <= 1 or attack_name == "fgsm":
+        return generate_attack(attack_name, source_models, images, labels, args)
+
+    best_adversarial = None
+    best_scores = None
+    for _ in range(args.restarts):
+        adversarial = generate_attack(attack_name, source_models, images, labels, args)
+        scores = source_attack_scores(
+            source_models,
+            adversarial,
+            labels,
+            attack_name=attack_name,
+            source_weights=args.source_weights,
+        )
+        if best_adversarial is None:
+            best_adversarial = adversarial
+            best_scores = scores
+            continue
+
+        assert best_scores is not None
+        keep_mask = scores > best_scores
+        best_scores = torch.where(keep_mask, scores, best_scores)
+        best_adversarial = torch.where(keep_mask[:, None, None, None], adversarial, best_adversarial)
+
+    assert best_adversarial is not None
+    return best_adversarial
 
 
 def empty_stats() -> dict[str, float]:
@@ -150,6 +217,8 @@ def evaluate_transfer(args: argparse.Namespace) -> list[dict[str, object]]:
         raise ValueError("Single-model attacks require exactly one source checkpoint.")
     if args.attack == "ensemble" and len(args.source_checkpoints) < 2:
         raise ValueError("Ensemble attack requires at least two source checkpoints.")
+    if args.source_weights is not None and len(args.source_weights) != len(args.source_checkpoints):
+        raise ValueError("source_weights length must match source_checkpoints length.")
 
     seed_everything(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -180,9 +249,14 @@ def evaluate_transfer(args: argparse.Namespace) -> list[dict[str, object]]:
         images = images.to(device)
         labels = labels.to(device)
 
-        source_clean_pred = predict_source(source_models, images, use_ensemble=use_ensemble_source)
+        source_clean_pred = predict_source(
+            source_models,
+            images,
+            use_ensemble=use_ensemble_source,
+            source_weights=args.source_weights,
+        )
         source_clean_ok = source_clean_pred == labels
-        adversarial = generate_attack(args.attack, source_models, images, labels, args)
+        adversarial = generate_attack_with_restarts(args.attack, source_models, images, labels, args)
         raw_ssim = global_ssim(denormalize(images), denormalize(adversarial))
 
         for target_path, info in results.items():
@@ -234,9 +308,13 @@ def evaluate_transfer(args: argparse.Namespace) -> list[dict[str, object]]:
             "alpha": args.alpha if args.attack != "fgsm" else "",
             "steps": args.steps if args.attack != "fgsm" else "",
             "momentum": args.momentum if args.attack in {"mi_fgsm", "ensemble"} else "",
-            "random_start": args.random_start if args.attack in {"pgd", "mi_fgsm", "ensemble"} else "",
+            "random_start": (args.random_start or args.restarts > 1) if args.attack in {"pgd", "mi_fgsm", "ensemble"} else "",
             "diversity_prob": args.diversity_prob if args.attack in {"mi_fgsm", "ensemble"} else "",
             "resize_rate": args.resize_rate if args.attack in {"mi_fgsm", "ensemble"} else "",
+            "ti_kernel_size": args.ti_kernel_size if args.attack in {"mi_fgsm", "ensemble"} else "",
+            "ti_sigma": args.ti_sigma if args.attack in {"mi_fgsm", "ensemble"} else "",
+            "restarts": args.restarts if args.attack in {"pgd", "mi_fgsm", "ensemble"} else "",
+            "source_weights": "|".join(str(weight) for weight in args.source_weights) if args.source_weights else "",
             "samples": total,
             "source_clean_acc": source_clean_acc,
             "target_clean_acc": target_clean_acc,
